@@ -1,37 +1,45 @@
-// submit-video.mjs — one-shot WorkRally canvas video submission (skill v2, test-verified selectors).
-// Edit CONFIG, then: ego-browser nodejs -e "await import('file:///<dir>/submit-video.mjs')"
-// Prints the new output node's data-id at the end; feed it to wait-done.mjs.
+// smoke-submit.mjs — fast-path smoke test (v2 script, reuseExisting path)
 const CONFIG = {
-  space: "workrally-video",
-  canvasUrl: "https://workrally.qq.com/toolbox/canvas/<id>",
-  imagePath: "C:/absolute/path/reference.jpeg", // forward slashes
-  prompt: ["0-5 秒：…", "5-10 秒：…"].join("\n"),
-  durationSec: 12, // integer 5..15 (slider snaps to whole seconds)
-  reuseExisting: false, // true: skip upload if an image node + generator already exist on the canvas
+  space: "workrally-skilltest",
+  canvasUrl: "https://workrally.qq.com/toolbox/canvas/5mwo4rz2skietqc2h2ryv6p",
+  imagePath: "C:/Users/Administrator/Desktop/tp/生成女人全身三视图.jpeg",
+  prompt: "5秒：年轻女人泡在日式温泉池里，肩膀露出水面，微笑着对镜头说话，水面冒着热气，旁边石头上趴着水豚。",
+  durationSec: 5,
+  reuseExisting: true,
 };
 
+const t0 = Date.now();
 const task = await taskSpace(CONFIG.space);
 const page = task.page("p1");
 await page.goto(CONFIG.canvasUrl, { waitUntil: "domcontentloaded" });
 await page.waitForSelector(".react-flow__node", { timeout: 20000 });
 
-// --- 1) upload reference image (arm chooser BEFORE click) ---
+// --- 1) upload (skipped when reuseExisting and a generator exists) ---
 const gensBefore = await page.evaluate(() => JSON.stringify([...document.querySelectorAll(".react-flow__node-videoGenerator")].map((n) => n.getAttribute("data-id"))));
 const hasGen0 = await page.evaluate(() => !!document.querySelector(".react-flow__node-videoGenerator"));
 if (!(CONFIG.reuseExisting && hasGen0)) {
-  await page.click('[aria-label="添加节点"]', { label: "add node" }); // div[role=button]; CSS aria beats role locator
+  await page.click('[aria-label="添加节点"]', { label: "add node" });
   const chooserPromise = page.waitForFileChooser({ timeout: 10000 });
   await page.click("text=本地上传", { label: "local upload" });
   await (await chooserPromise).setFiles(CONFIG.imagePath);
   await page.waitForTimeout(4000);
-}
+} else { console.log("reuseExisting: skipping upload"); }
 
-// --- 2) generator node: prefer the one newly created by this upload; else create 视频→单图 ---
+// --- 2) generator: fresh one if upload created it; else create 视频→单图 and wire ---
 let genId = await page.evaluate((prev) => {
   const before = new Set(JSON.parse(prev));
-  const fresh = [...document.querySelectorAll(".react-flow__node-videoGenerator")].find((n) => !before.has(n.getAttribute("data-id")));
-  return fresh ? fresh.getAttribute("data-id") : null;
+  const all = [...document.querySelectorAll(".react-flow__node-videoGenerator")];
+  const fresh = all.find((n) => !before.has(n.getAttribute("data-id")));
+  if (fresh) return fresh.getAttribute("data-id");
+  return null;
 }, gensBefore);
+if (!genId && CONFIG.reuseExisting) {
+  genId = await page.evaluate(() => {
+    const all = [...document.querySelectorAll(".react-flow__node-videoGenerator")];
+    return all[all.length - 1]?.getAttribute("data-id") || null;
+  });
+  console.log("reusing existing generator:", genId);
+}
 if (!genId) {
   await page.click('[aria-label="添加节点"]', { label: "add node" });
   await page.waitForTimeout(800);
@@ -40,7 +48,7 @@ if (!genId) {
     const r = e.getBoundingClientRect();
     return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
   });
-  await page.mouse.move(vid.x, vid.y, { label: "hover 视频" }); // submenu opens on hover
+  await page.mouse.move(vid.x, vid.y, { label: "hover 视频" });
   await page.waitForTimeout(900);
   const sub = await page.evaluate(() => {
     const es = [...document.querySelectorAll("li,div,span,button")]
@@ -55,7 +63,6 @@ if (!genId) {
     const fresh = [...document.querySelectorAll(".react-flow__node-videoGenerator")].find((n) => !before.has(n.getAttribute("data-id")));
     return (fresh || document.querySelector(".react-flow__node-videoGenerator"))?.getAttribute("data-id");
   }, gensBefore);
-  // wire image output -> generator input by dragging handles
   const pts = await page.evaluate((gid) => {
     const img = [...document.querySelectorAll(".react-flow__node-image")].pop();
     const gen = document.querySelector(`[data-id="${gid}"]`);
@@ -67,64 +74,103 @@ if (!genId) {
   await page.mouse.move(pts.out.x, pts.out.y);
   await page.mouse.down();
   await page.mouse.move(pts.inp.x, pts.inp.y, { steps: 25 });
-  await page.mouse.move(pts.inp.x + 1, pts.inp.y + 1, { steps: 3 }); // nudge so react-flow registers the drop
+  await page.mouse.move(pts.inp.x + 1, pts.inp.y + 1, { steps: 3 });
   await page.mouse.up();
   await page.waitForFunction((before) => document.querySelectorAll(".react-flow__edge").length > before, pts.edges, { timeout: 5000 });
   console.log("generator created + wired:", genId);
 }
 
-// --- 3) pan generator node into mid-viewport (panel renders BELOW node; off-screen nodes unmount) ---
-const panIntoView = async () => page.evaluate((gid) => {
-  const n = document.querySelector(`[data-id="${gid}"]`);
-  if (!n) return "unmounted";
-  const r = n.getBoundingClientRect();
-  return { cx: r.x + r.width / 2, bottom: r.y + r.height, need: r.y + r.height > 480 ? Math.round((r.y + r.height) / 2 - 300) : 0 };
-}, genId);
-let g = await panIntoView();
-if (g !== "unmounted" && g.need > 0) {
-  const pane = await page.evaluate(() => {
-    const el = document.elementFromPoint(300, 300);
-    return el && el.closest(".react-flow__pane") && !el.closest(".react-flow__node") ? { x: 300, y: 300 } : null;
-  });
-  if (pane) {
-    await page.mouse.move(pane.x, pane.y); await page.mouse.down();
-    await page.mouse.move(pane.x, pane.y - g.need, { steps: 10 }); await page.mouse.up();
-    await page.waitForTimeout(600);
+// --- 3) viewport manager: wheel-pan (verified: deltaY +600 pans content up ~334px; node w>=420 for panel render) ---
+const findPane = () => page.evaluate(() => {
+  for (const [x, y] of [[950, 150], [300, 250], [1200, 250], [700, 620], [200, 500]]) {
+    const el = document.elementFromPoint(x, y);
+    if (el && el.closest(".react-flow__pane") && !el.closest(".react-flow__node")) return { x, y };
   }
-}
-
-// --- 4) open generator panel ---
-const c = await page.evaluate((gid) => {
-  const r = document.querySelector(`[data-id="${gid}"]`).getBoundingClientRect();
-  return { x: r.x + r.width / 2, y: r.y + r.height * 0.8 };
-}, genId);
-await page.mouse.click(c.x, c.y, { label: "select generator" });
-await page.waitForSelector('[role="textbox"][aria-label="提示词"]', { timeout: 10000 });
-
-// --- 5) model: Rally-Video lives in the 参考主体 tab (单图 tab defaults to paid Vidu) ---
-const tab = await page.evaluate(() => {
-  const b = [...document.querySelectorAll("button,[role='button']")].find((x) => (x.innerText || "").trim() === "参考主体");
-  const r = b.getBoundingClientRect();
-  return { x: r.x + r.width / 2, y: r.y + r.height / 2, active: b.className.includes("active") };
+  return null;
 });
-if (!tab.active) { await page.mouse.click(tab.x, tab.y, { label: "参考主体 tab" }); await page.waitForTimeout(1200); }
-const modelOk = await page.evaluate(() => /Rally-Video/.test(document.body.innerText));
-if (!modelOk) {
-  const chip = await page.evaluate(() => {
-    const g = [...document.querySelectorAll('[role="group"][aria-label="模型"]')][0];
-    const r = g.getBoundingClientRect(); return { x: r.x + 60, y: r.y + r.height / 2 };
-  });
-  await page.mouse.click(chip.x, chip.y, { label: "open model dropdown" });
-  await page.waitForTimeout(800);
-  const opt = await page.evaluate(() => {
-    const e = [...document.querySelectorAll("div,li,span")].find((x) => /Rally-Video/.test(x.innerText || "") && x.getBoundingClientRect().width > 60 && x.getBoundingClientRect().width < 400);
-    const r = e.getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
-  });
-  await page.mouse.click(opt.x, opt.y, { label: "pick Rally-Video" });
+const nodeRect = () => page.evaluate((gid) => {
+  const n = document.querySelector(`[data-id="${gid}"]`);
+  if (!n) return null;
+  const r = n.getBoundingClientRect();
+  return { cx: r.x + r.width / 2, cy: r.y + r.height / 2, w: r.width, h: r.height };
+}, genId);
+const wheelPan = async (targetCy) => {
+  for (let i = 0; i < 8; i++) {
+    const nr = await nodeRect();
+    if (!nr) { console.log("node unmounted -> reload"); await page.reload({ waitUntil: "domcontentloaded" }); await page.waitForSelector(".react-flow__node", { timeout: 20000 }); continue; }
+    const err = nr.cy - targetCy;
+    if (Math.abs(err) < 30) return nr;
+    const pane = await findPane();
+    if (!pane) { console.log("no pane"); return nr; }
+    await page.mouse.move(pane.x, pane.y);
+    await page.mouse.wheel(0, Math.max(-900, Math.min(900, Math.round(err / 0.56))));
+    await page.waitForTimeout(700);
+  }
+  return await nodeRect();
+};
+// zoom in over node until w>=420 (ctrl+wheel negative = zoom IN)
+for (let i = 0; i < 6; i++) {
+  const nr = await nodeRect();
+  if (!nr) { await page.reload({ waitUntil: "domcontentloaded" }); await page.waitForSelector(".react-flow__node", { timeout: 20000 }); continue; }
+  if (nr.w >= 420) break;
+  const pane = await findPane();
+  await page.mouse.move(nr.cx, nr.cy);
+  await page.keyboard.down("Control");
+  await page.mouse.wheel(0, -240);
+  await page.mouse.wheel(0, -240);
+  await page.keyboard.up("Control");
   await page.waitForTimeout(800);
 }
+// node center at y≈320 so the below-node panel fits on screen
+console.log("final node rect:", JSON.stringify(await wheelPan(320)));
 
-// --- 6) fill prompt ---
+// --- 4) open panel ---
+const spots = await page.evaluate((gid) => {
+  const r = document.querySelector(`[data-id="${gid}"]`).getBoundingClientRect();
+  return [
+    { x: r.x + r.width / 2, y: r.y + r.height * 0.8 },
+    { x: r.x + r.width / 2, y: r.y + 20 },
+    { x: r.x + r.width / 2, y: r.y + r.height / 2 },
+  ];
+}, genId);
+let opened = false;
+for (const sp of spots) {
+  await page.mouse.click(sp.x, sp.y, { label: "select generator" });
+  await page.waitForTimeout(1200);
+  const has = await page.evaluate(() => !!document.querySelector('[role="textbox"][aria-label="提示词"]'));
+  if (has) { opened = true; break; }
+}
+if (!opened) {
+  await page.screenshot({ path: "C:/Users/Administrator/ego/workrally-skilltest-20261030/fail-panel.png" });
+  throw new Error("panel never opened; see fail-panel.png");
+}
+console.log("panel opened");
+
+// --- 5) switch to 参考主体 tab (Rally-Video default there); verify by model group ---
+for (let i = 0; i < 3; i++) {
+  const rally = await page.evaluate(() => {
+    const grp = [...document.querySelectorAll('[aria-label="模型"],[role="group"]')].find((g) => /模型/.test(g.getAttribute("aria-label") || "") || /Rally-Video|Vidu-Q4/.test(g.innerText || ""));
+    return /Rally-Video/.test(grp ? grp.innerText : document.body.innerText);
+  });
+  if (rally) break;
+  const tab = await page.evaluate(() => {
+    const b = [...document.querySelectorAll("button,[role='button']")].find((x) => (x.innerText || "").trim() === "参考主体");
+    if (!b) return null;
+    const r = b.getBoundingClientRect();
+    return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
+  });
+  if (!tab) { console.log("tab not found"); break; }
+  await page.mouse.click(tab.x, tab.y, { label: "参考主体 tab" });
+  await page.waitForTimeout(1500);
+}
+const modelOk = await page.evaluate(() => /Rally-Video/.test(document.body.innerText));
+console.log("model Rally-Video visible:", modelOk);
+if (!modelOk) {
+  await page.screenshot({ path: "C:/Users/Administrator/ego/workrally-skilltest-20261030/fail-model.png" });
+  throw new Error("Rally-Video not visible — see fail-model.png");
+}
+
+// --- 6) prompt ---
 const pb = await page.evaluate(() => {
   const r = document.querySelector('[role="textbox"][aria-label="提示词"]').getBoundingClientRect();
   return { x: r.x + 30, y: r.y + 20 };
@@ -132,7 +178,7 @@ const pb = await page.evaluate(() => {
 await page.mouse.click(pb.x, pb.y, { label: "focus prompt" });
 await page.keyboard.insertText(CONFIG.prompt);
 
-// --- 7) duration slider: linear on .t-slider__rail (tick labels are unreliable) ---
+// --- 7) duration via rail ---
 const par = await page.evaluate(() => {
   const b = document.querySelector('[aria-label="生成参数"]');
   const r = b.getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
@@ -148,13 +194,12 @@ const rail = await page.evaluate(() => {
 const targetX = rail.l + (rail.r - rail.l) * (CONFIG.durationSec - 5) / 10;
 await page.mouse.move(rail.thumbX, rail.y); await page.mouse.down();
 await page.mouse.move(targetX, rail.y, { steps: 8 }); await page.mouse.up();
-const durRead = await page.evaluate(() => {
+console.log("duration:", await page.evaluate(() => {
   const grp = [...document.querySelectorAll('[role="group"]')].find((g) => g.getAttribute("aria-label") === "时长");
   return grp.innerText.replace(/\s+/g, " ").slice(0, 12);
-});
-console.log("duration:", durRead); // expect "时长12s…"
+}));
 
-// --- 8) close dialog by TOGGLING the chip (Escape does NOT work), then submit ---
+// --- 8) collapse chip, submit, capture new node ---
 await page.mouse.click(par.x, par.y, { label: "collapse params" });
 await page.waitForTimeout(500);
 const before = await page.evaluate(() => JSON.stringify([...document.querySelectorAll(".react-flow__node-video")].map((n) => n.getAttribute("data-id"))));
@@ -171,3 +216,4 @@ const newId = await page.evaluate((prev) => {
   return n ? n.getAttribute("data-id") : "none";
 }, before);
 console.log("OUTPUT_NODE_ID:", newId);
+console.log("ELAPSED_MS:", Date.now() - t0);

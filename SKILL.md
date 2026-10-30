@@ -19,7 +19,7 @@ Run each with the ASCII one-liner: `ego-browser nodejs -e "await import('file://
 1. **Open**: `taskSpace(name)` → `goto(canvasUrl)` → `waitForSelector(".react-flow__node")`.
 2. **Upload**: `[aria-label="添加节点"]` (a div[role=button]; CSS-aria beats role locator) → arm `waitForFileChooser()` → `text=本地上传` → `setFiles(absPath)`.
 3. **Generator node**: upload may NOT auto-create one. If `.react-flow__node-videoGenerator` absent: 添加节点 → **hover** `视频` (submenu opens on hover, not click) → click `单图`. New node `data-id` starts `vid-gen-`. **Wire it**: `mouse.down/move(steps:25)/up` from image node `[aria-label="图片输出"]` handle to generator `[aria-label="输入"]` handle; verify `.react-flow__edge` count increased.
-4. **Pan into view (critical)**: the editing panel renders BELOW the node, and react-flow UNMOUNTS off-viewport nodes entirely (querySelector → null). Before opening the panel, drag empty `.react-flow__pane` so the node bottom sits at y≈400-480. If layout got weird, `reload()` resets the viewport.
+4. **Pan into view (critical)**: the editing panel renders BELOW the node, and react-flow UNMOUNTS off-viewport nodes entirely (querySelector → null). Wheel-pan over an empty `.react-flow__pane` (Δ×0.56 ≈ px) until node center y≈320; avoid drag-panning (it can fling nodes out of mount). `reload()` resets the viewport.
 5. **Open panel**: click measured node center (lower 20% to dodge overlaps). Prompt box = `[role="textbox"][aria-label="提示词"]`; `insertText` shot-script verbatim (newline-joined segments accepted).
 6. **Model**: Rally-Video is on the **参考主体 tab** (default there), NOT in 单图's list (which defaults to paid Vidu-Q4-Preview). Cost shows `生成 0 (N)` = free quota.
 7. **Duration**: open `[aria-label="生成参数"]` chip. Ticks are unreliable (duplicated labels). Use the rail: `x = railL + (railR-railL)*(sec-5)/10` from `.t-slider__rail`, drag `.t-slider__button` at rail y. Snaps to whole seconds. Verify group `时长{N}s`.
@@ -56,6 +56,10 @@ Run each with the ASCII one-liner: `ego-browser nodejs -e "await import('file://
 | Polling innerText right after submit at low zoom | Zoom in (ctrl+wheel negative deltaY) or read `--low-zoom-progress` |
 | Seeking the in-node `<video>` for frame checks | Opens mp4 `currentSrc` in a fresh page instead |
 | Fixed `waitForTimeout(5000)` everywhere | `waitForSelector`/`waitForFunction` — and batch steps into ONE script |
+| Drag-pan the canvas to move a node | Wheel-pan: drag overshoot unmounts the node |
+| Clicking 参考主体 tab once and trusting it | Re-check model group text; retry tab click up to 3× |
+| run_in_background for long ego scripts | Foreground pwsh (auto-promotes to job); background quoting breaks |
+| `await page.waitForFunction(...).jsonValue()` | This ego build's handle has no jsonValue — waitForFunction then page.evaluate the state |
 | Reusing snapshot `@refs` after canvas changes | Re-measure rects via evaluate every round |
 
 ## Environment notes
